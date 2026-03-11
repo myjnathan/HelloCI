@@ -12,5 +12,5 @@ add_executable(hello_ci
 )
 
 enable_testing()
-
-add_test(NAME basic_test COMMAND hello_ci)
+include(CTest)
+ctest_discover_tests(hello_ci)
