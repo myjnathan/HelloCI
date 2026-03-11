@@ -52,12 +52,20 @@ jobs:
         pip install requests
         pip install PyGithub
       
-    - name: Get failure logs
-      id: logs
+    - name: Get failure info
+      id: info
       run: |
-        # 获取最近失败运行的日志
-        LOGS=$(gh run view ${{ github.run_id }} --log 2>/dev/null | tail -200)
-        echo "logs=$LOGS" >> $GITHUB_OUTPUT
+        # 获取构建失败的日志
+        echo "Fetching build logs..."
+        
+        # 使用 GitHub API 获取日志
+        LOGS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/logs 2>/dev/null | head -200 || echo "Could not fetch logs")
+        
+        # 或者直接获取构建输出
+        BUILD_OUTPUT=$(gh run view ${{ github.run_id }} --log 2>/dev/null | tail -100)
+        
+        echo "$BUILD_OUTPUT" > /tmp/build_log.txt
+        echo "log_file=/tmp/build_log.txt" >> $GITHUB_OUTPUT
         
     - name: Run Build Failure Agent
       env:
@@ -66,19 +74,9 @@ jobs:
         RUN_ID: ${{ github.run_id }}
         REPO: ${{ github.repository }}
       run: |
-        python - agent/build_agent.py << 'EOF'
-        ${{ steps.logs.outputs.logs }}
-        EOF
+        python - agent/build_agent.py /tmp/build_log.txt
 
-    - name: Create Fix PR (if confidence > 0.7)
-      if: success()
-      env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    - name: Notify result
+      if: always()
       run: |
-        echo "检查是否需要创建修复PR..."
-        # Agent 会在这里自动创建修复PR
-
-    - name: Notify on failure
-      if: failure()
-      run: |
-        echo "🤖 Build Agent 无法自动修复，请手动查看日志"
+        echo "🤖 Agent analysis complete. Check the logs above for details."
