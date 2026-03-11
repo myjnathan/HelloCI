@@ -1,0 +1,39 @@
+name: C++ CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++
+        
+    - name: Configure
+      run: cmake -B build
+      
+    - name: Build
+      run: cmake --build build
+      
+    - name: Run tests
+      run: ctest --output-on-failure
+      
+    - name: Run application
+      run: ./build/hello_ci
+
+  # 🚀 Agent可自动处理的部分：当构建失败时，自动分析错误并尝试修复
+  # 可创建一个Agent来:
+  # - 分析构建错误日志
+  # - 尝试修复编译问题
+  # - 建议代码修改
+  # - 提交修复PR
