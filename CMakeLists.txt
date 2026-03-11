@@ -12,5 +12,4 @@ add_executable(hello_ci
 )
 
 enable_testing()
-include(CTest)
-ctest_discover_tests(hello_ci)
+add_test(NAME basic_test COMMAND ${CMAKE_CURRENT_BINARY_DIR}/hello_ci)
