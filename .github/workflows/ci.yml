@@ -9,9 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      error_log: ${{ steps.build.outputs.error_log }}
-      
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -27,21 +25,44 @@ jobs:
     - name: Build
       id: build
       run: |
-        # 尝试构建，保存输出
-        if ! cmake --build build 2>&1; then
-          ERROR_LOG=$(cmake --build build 2>&1 || true)
-          echo "error_log=$ERROR_LOG" >> $GITHUB_OUTPUT
-          echo "Build failed with error:"
-          echo "$ERROR_LOG"
+        # 尝试构建，捕获完整输出
+        OUTPUT=$(cmake --build build 2>&1) || true
+        echo "$OUTPUT" > /tmp/build_error.txt
+        echo "status=$?" > /tmp/build_status.txt
+        
+        # 如果构建失败，保存错误并输出
+        if echo "$OUTPUT" | grep -q "error:"; then
+          echo "BUILD_FAILED=true" >> $GITHUB_OUTPUT
+          # 在日志中输出关键错误信息
+          echo "::group::Build Error"
+          echo "$OUTPUT"
+          echo "::endgroup::"
           exit 1
         fi
       
+    - name: Save error log
+      if: failure()
+      run: |
+        # 保存完整错误日志到 artifact
+        echo "::set-output name=error_log::$(cat /tmp/build_error.txt)"
+        cat /tmp/build_error.txt > build_error.log
+      
+    - name: Upload error log
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-error-log
+        path: build_error.log
+        retention-days: 1
+        
     - name: Run tests
       working-directory: build
       run: ctest --output-on-failure
+      if: success()
       
     - name: Run application
       run: ./build/hello_ci
+      if: success()
 
   # 🤖 Build Failure Agent - 当构建失败时自动分析
   agent:
@@ -63,19 +84,20 @@ jobs:
         pip install requests
         pip install PyGithub
       
+    - name: Download error log
+      uses: actions/download-artifact@v4
+      with:
+        name: build-error-log
+      
     - name: Run Build Failure Agent
       env:
         DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
         RUN_ID: ${{ github.run_id }}
         REPO: ${{ github.repository }}
-        BUILD_ERROR: ${{ needs.build.outputs.error_log }}
       run: |
-        # 把错误日志写入文件
-        echo "$BUILD_ERROR" > /tmp/build_error.log
-        
-        # 运行 Agent
-        python - agent/build_agent.py /tmp/build_error.log
+        # 运行 Agent，传入错误日志文件
+        python - agent/build_agent.py build_error.log
 
     - name: Notify result
       run: |
