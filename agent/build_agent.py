@@ -6,7 +6,11 @@ CI Build Failure Agent
 功能：
 1. 监听 GitHub Actions 构建失败
 2. 使用 DeepSeek 分析错误日志
-3. 自动尝试修复并提交
+3. 自动尝试修复并提交 PR
+
+用法：
+    python agent/build_agent.py [error_log_file]
+    或在 GitHub Actions 中通过 stdin 传入日志
 """
 
 import os
@@ -17,12 +21,13 @@ import requests
 from typing import Optional, Dict, Any
 
 # ========== 配置 ==========
-DEEPSEEK_API_KEY = "sk-bb7e6c1015df4f6092ec1640c5632962"
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-bb7e6c1015df4f6092ec1640c5632962")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 
-GITHUB_REPO = "myjnathan/HelloCI"
+GITHUB_REPO = os.environ.get("REPO", "myjnathan/HelloCI")
 GITHUB_TOKEN = os.environ.get("GH_TOKEN", "")
+RUN_ID = os.environ.get("RUN_ID", "")
 
 # ========================
 
@@ -73,7 +78,8 @@ def analyze_build_failure(error_log: str) -> Dict[str, Any]:
 }}
 """
 
-    system_prompt = "你是一个专业的 C++ 工程师，擅长分析构建错误并提供精确的修复方案。"
+    system_prompt = """你是一个专业的 C++ 工程师，擅长分析构建错误并提供精确的修复方案。
+请只返回 JSON 格式，不要有其他内容。"""
 
     try:
         response = call_deepseek(prompt, system_prompt)
@@ -83,7 +89,7 @@ def analyze_build_failure(error_log: str) -> Dict[str, Any]:
         if json_match:
             return json.loads(json_match.group())
     except Exception as e:
-        print(f"API 调用失败: {e}")
+        print(f"⚠️ API 调用失败: {e}")
     
     return {
         "cause": "未知错误",
@@ -92,77 +98,144 @@ def analyze_build_failure(error_log: str) -> Dict[str, Any]:
         "confidence": 0.0
     }
 
-def get_failed_run_info() -> Optional[Dict[str, Any]]:
-    """获取最近失败的 CI 运行信息"""
+def get_failed_run_logs() -> str:
+    """获取失败运行的日志"""
     if not GITHUB_TOKEN:
-        print("警告: 未设置 GH_TOKEN 环境变量")
-        return None
+        # 尝试使用 gh CLI
+        try:
+            result = subprocess.run(
+                ["gh", "run", "view", RUN_ID, "--log"],
+                capture_output=True, text=True, timeout=30
+            )
+            return result.stdout[-8000:] if result.stdout else ""
+        except Exception as e:
+            print(f"⚠️ 无法获取日志: {e}")
+            return ""
     
-    cmd = [
-        "gh", "run", "list",
-        "--repo", GITHUB_REPO,
-        "--limit", "5",
-        "--json", "databaseId,status,conclusion,title"
-    ]
+    # 使用 GitHub API
+    from github import Github
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(GITHUB_REPO)
+    run = repo.get_workflow_run(int(RUN_ID))
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"获取运行列表失败: {result.stderr}")
-        return None
+    logs = ""
+    for job in run.jobs():
+        for log in job.logs():
+            logs += log.text
     
-    runs = json.loads(result.stdout)
-    for run in runs:
-        if run.get("conclusion") == "failure":
-            return run
-    
-    return None
+    return logs[-8000:]
 
-def get_run_logs(run_id: str) -> str:
-    """获取运行日志"""
-    cmd = ["gh", "run", "view", run_id, "--log"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.stdout[-5000:]  # 取最后5000字符
+def create_fix_branch(fix_content: str, branch_name: str = "fix/ci-build") -> bool:
+    """创建修复分支并提交"""
+    if not GITHUB_TOKEN:
+        print("⚠️ 未设置 GH_TOKEN，无法创建分支")
+        return False
+    
+    try:
+        # 使用 gh CLI 创建分支
+        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-m", f"Fix: CI build failure\n\n{fix_content}"], check=True)
+        subprocess.run(["git", "push", "-u", "origin", branch_name], check=True)
+        
+        # 创建 PR
+        subprocess.run([
+            "gh", "pr", "create",
+            "--title", "🤖 Auto Fix: CI Build Failure",
+            "--body", f"自动修复 CI 构建失败\n\n修复内容:\n{fix_content}",
+            "--base", "main"
+        ], check=True)
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ 创建 PR 失败: {e}")
+        return False
 
-def apply_fix(fix_suggestion: str, file_path: str) -> bool:
-    """应用修复"""
-    print(f"建议修复: {fix_suggestion}")
-    print(f"目标文件: {file_path}")
-    # 这里可以实现自动修复逻辑
-    return True
+def notify(message: str, level: str = "info"):
+    """发送通知"""
+    # 打印到日志
+    emoji = {"info": "ℹ️", "success": "✅", "error": "❌", "warning": "⚠️"}.get(level, "📢")
+    print(f"{emoji} {message}")
+    
+    # 可以扩展: Slack, Telegram, Discord 等
 
 def main():
+    print("=" * 50)
     print("🤖 CI Build Failure Agent 启动")
     print(f"📡 使用模型: {DEEPSEEK_MODEL}")
     print(f"📦 仓库: {GITHUB_REPO}")
-    
-    # 获取失败的运行
-    failed_run = get_failed_run_info()
-    if not failed_run:
-        print("✅ 没有失败的 CI 运行")
-        return 0
-    
-    run_id = failed_run["databaseId"]
-    print(f"❌ 发现失败的运行: {run_id}")
+    print(f"🔑 API Key: {DEEPSEEK_API_KEY[:10]}...")
+    print("=" * 50)
     
     # 获取日志
-    logs = get_run_logs(str(run_id))
-    print(f"📋 获取到 {len(logs)} 字符的日志")
+    error_log = ""
+    
+    # 方法1: 从命令行参数读取文件
+    if len(sys.argv) > 1:
+        with open(sys.argv[1], 'r') as f:
+            error_log = f.read()
+    
+    # 方法2: 从 stdin 读取 (GitHub Actions)
+    if not error_log:
+        try:
+            error_log = sys.stdin.read()
+        except:
+            pass
+    
+    # 方法3: 从 GitHub API 获取
+    if not error_log:
+        error_log = get_failed_run_logs()
+    
+    if not error_log:
+        notify("无法获取构建日志", "error")
+        return 1
+    
+    # 截取关键部分
+    if len(error_log) > 6000:
+        error_log = error_log[-6000:]
+    
+    print(f"📋 获取到 {len(error_log)} 字符的日志")
     
     # 分析错误
-    print("🔍 正在使用 DeepSeek 分析错误...")
-    analysis = analyze_build_failure(logs)
+    print("\n🔍 正在使用 DeepSeek 分析错误...")
+    analysis = analyze_build_failure(error_log)
     
-    print("\n📊 分析结果:")
-    print(f"  原因: {analysis.get('cause', 'N/A')}")
-    print(f"  位置: {analysis.get('location', 'N/A')}")
-    print(f"  修复建议: {analysis.get('fix_suggestion', 'N/A')}")
-    print(f"  置信度: {analysis.get('confidence', 0):.0%}")
+    print("\n" + "=" * 50)
+    print("📊 分析结果:")
+    print("=" * 50)
+    print(f"  ❓ 原因: {analysis.get('cause', 'N/A')}")
+    print(f"  📍 位置: {analysis.get('location', 'N/A')}")
+    print(f"  🔧 修复建议: {analysis.get('fix_suggestion', 'N/A')}")
+    print(f"  📈 置信度: {analysis.get('confidence', 0):.0%}")
+    print("=" * 50)
     
-    # 如果置信度高，可以选择自动修复
-    if analysis.get("confidence", 0) > 0.7:
-        print("\n🔧 置信度高，准备自动修复...")
-        # apply_fix(...)
+    # 保存分析结果
+    result = {
+        "run_id": RUN_ID,
+        "repo": GITHUB_REPO,
+        "analysis": analysis,
+        "timestamp": subprocess.run(
+            ["date", "+%Y-%m-%d %H:%M:%S"],
+            capture_output=True, text=True
+        ).stdout.strip()
+    }
     
+    with open(os.environ.get("GITHUB_OUTPUT", "build_analysis.json"), "w") as f:
+        json.dump(result, f, indent=2)
+    
+    # 根据置信度决定下一步
+    confidence = analysis.get("confidence", 0)
+    
+    if confidence > 0.7:
+        print(f"\n🔧 置信度高于 70%，尝试自动修复...")
+        if create_fix_branch(analysis.get("fix_suggestion", "")):
+            notify("✅ 自动修复 PR 已创建!", "success")
+        else:
+            notify("⚠️ 自动修复失败，请手动处理", "warning")
+    else:
+        notify(f"⚠️ 置信度较低 ({confidence:.0%})，跳过自动修复", "warning")
+    
+    print("\n✅ Agent 运行完成")
     return 0
 
 if __name__ == "__main__":

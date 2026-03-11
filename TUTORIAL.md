@@ -362,6 +362,8 @@ wget https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-lin
 
 **提示：** 可以使用 Agent 自动处理构建失败，详见 Agent 相关文档。
 
+**提示：** 可以使用 Agent 自动处理构建失败，详见第七部分。
+
 ### Q8: 如何添加更多测试？
 
 在 CMakeLists.txt 中添加更多测试：
@@ -389,6 +391,140 @@ on:
     branches: [main]
   schedule:
     - cron: '0 0 * * *'  # 每天午夜运行
+```
+
+---
+
+## 第七步：配置自动修复 Agent (可选)
+
+本节介绍如何配置一个使用 DeepSeek API 的自动修复 Agent，当 CI 构建失败时自动分析并尝试修复。
+
+### 7.1 Agent 功能介绍
+
+🤖 **CI Build Failure Agent** 可以：
+- 自动检测 CI 构建失败
+- 使用 DeepSeek AI 分析错误日志
+- 提供具体的修复建议
+- 自动创建修复 PR（可选）
+
+### 7.2 配置 GitHub Secrets
+
+在 GitHub 仓库中添加以下 Secrets：
+
+1. 打开 `https://github.com/你的用户名/HelloCI/settings/secrets/actions`
+2. 点击 "New repository secret"
+
+| Secret 名称 | 值 | 说明 |
+|-------------|-----|------|
+| `DEEPSEEK_API_KEY` | `sk-bb7e6c1015df4f6092ec1640c5632962` | DeepSeek API 密钥 |
+| `GH_TOKEN` | 你的 GitHub PAT | 需要 repo 权限的 Token |
+
+**创建 GH_TOKEN:**
+```bash
+# 使用 gh CLI 创建
+gh auth token
+# 或在 GitHub 设置中创建: Settings → Developer settings → Personal access tokens
+```
+
+### 7.3 Agent 工作流程
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  CI Build   │────▶│  Agent       │────▶│  DeepSeek  │
+│  Fails      │     │  Detects     │     │  Analysis  │
+└─────────────┘     └──────────────┘     └─────────────┘
+                                               │
+                    ┌──────────────┐            │
+                    │  Confidence  │◀───────────┘
+                    │  Check       │
+                    └──────────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+   ┌─────────┐       ┌───────────┐      ┌──────────┐
+   │ > 70%   │       │  50-70%   │      │  < 50%   │
+   │ Auto Fix│       │  Notify   │      │  Manual  │
+   │ + PR    │       │  Only     │      │  Review  │
+   └─────────┘       └───────────┘      └──────────┘
+```
+
+### 7.4 本地测试 Agent
+
+```bash
+# 安装依赖
+pip install requests PyGithub
+
+# 运行 Agent (需要 GH_TOKEN 环境变量)
+export GH_TOKEN="your_github_token"
+export DEEPSEEK_API_KEY="sk-bb7e6c1015df4f6092ec1640c5632962"
+export RUN_ID="1234567890"
+export REPO="your-username/HelloCI"
+
+python agent/build_agent.py
+```
+
+### 7.5 CI 集成 Agent
+
+Agent 已集成到 `.github/workflows/ci.yml` 中：
+
+```yaml
+# 构建失败后自动触发 Agent
+agent:
+  needs: build
+  if: ${{ failure() }}
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install requests PyGithub
+    - name: Run Build Failure Agent
+      env:
+        DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      run: python agent/build_agent.py
+```
+
+### 7.6 Agent 代码说明
+
+核心文件: `agent/build_agent.py`
+
+| 函数 | 功能 |
+|------|------|
+| `call_deepseek()` | 调用 DeepSeek API 分析错误 |
+| `analyze_build_failure()` | 解析日志并生成修复建议 |
+| `create_fix_branch()` | 自动创建修复分支和 PR |
+| `notify()` | 发送通知（可扩展） |
+
+### 7.7 常见问题 FAQ (Agent)
+
+**Q1: Agent 分析不准确怎么办？**
+
+**解决：** 
+- 调整 `temperature` 参数（当前 0.7）
+- 优化 system prompt
+- 提供更多上下文日志
+
+**Q2: API 调用失败**
+
+**检查：**
+- API Key 是否正确
+- 网络是否可达
+- API 配额是否用完
+
+**Q3: 自动修复 PR 创建失败**
+
+**原因：** GH_TOKEN 权限不足
+**解决：** 确保 Token 有以下权限：
+- `repo` (完整仓库访问)
+- `workflow` (工作流访问)
+
+**Q4: 如何关闭自动修复功能？**
+
+修改 `agent/build_agent.py` 中的置信度阈值：
+```python
+if confidence > 0.7:  # 改为更高如 0.9 或直接设为 1.0
 ```
 
 ---
