@@ -20,12 +20,13 @@ jobs:
         sudo apt-get install -y cmake g++
         
     - name: Configure
-      run: cmake -B build
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       
     - name: Build
       run: cmake --build build
       
     - name: Run tests
+      working-directory: build
       run: ctest --output-on-failure
       
     - name: Run application
