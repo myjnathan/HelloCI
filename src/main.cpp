@@ -12,7 +12,6 @@ int main() {
     std::cout << "10 / 0 = " << calc.divide(10, 0) << " (expected: 0)" << std::endl;
     
     // 故意引入编译错误：调用一个不存在的函数
-    int result = calc.unknown_function(1, 2);
     
     return 0;
 }
